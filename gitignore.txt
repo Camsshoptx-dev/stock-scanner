@@ -1,0 +1,9 @@
+# Keep secrets and local files OFF GitHub
+alert_runner.py
+.env
+.env.example
+email_alerts.py
+config.py
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
