@@ -1,58 +1,59 @@
-﻿import time
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 from datetime import date, datetime
 
-st.set_page_config(page_title="Stock Scanner", layout="wide")
+st.set_page_config(page_title="Stock Scanner", layout="wide", initial_sidebar_state="collapsed")
 
+ACCENT = "#3DD9B0"
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-:root {
-    --bg: #0B0F17; --panel: #111726; --line: #1C2536;
-    --text: #D9E1EC; --muted: #8A94A6; --accent: #E8A13D;
-    --buy: #2FBF8F; --short: #E5484D;
-}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+:root { --accent:#3DD9B0; --bg:#0B0F17; --card:#111726; --card2:#161C2A;
+        --line:#1C2536; --text:#F4F6FB; --muted:#8A94A6; --dim:#5F6B7E;
+        --buy-bg:#0F2A20; --buy:#4FD1A0; --short-bg:#2A1315; --short:#F0837F; }
 .stApp { background: var(--bg); }
-html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-#MainMenu, footer, header[data-testid="stHeader"] { visibility: hidden; height: 0; }
-h1 {
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-weight: 600 !important; font-size: 1.55rem !important;
-    letter-spacing: 0.12em; color: var(--text) !important;
-    border-bottom: 1px solid var(--line); padding-bottom: 0.8rem !important;
-}
-h1::before { content: ""; display: inline-block; width: 0.5em; height: 0.85em; background: var(--accent); margin-right: 0.5em; }
-.status {
-    font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem;
-    color: var(--muted); background: var(--panel);
-    border: 1px solid var(--line); border-radius: 6px;
-    padding: 10px 16px; margin: 4px 0 14px 0; letter-spacing: 0.04em;
-}
-.status b { color: var(--text); font-weight: 500; }
-.status .buy { color: var(--buy); }
-.status .short { color: var(--short); }
-.status .sep { color: var(--line); padding: 0 10px; }
-.status .live { color: var(--accent); }
-.alertline {
-    font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem;
-    color: var(--text); background: var(--panel);
-    border: 1px solid var(--line); border-left: 3px solid var(--accent);
-    border-radius: 6px; padding: 10px 16px; margin: 0 0 18px 0;
-}
-.alertline .buy { color: var(--buy); font-weight: 600; }
-.alertline .short { color: var(--short); font-weight: 600; }
-[data-testid="stSidebar"] { background: var(--bg); border-right: 1px solid var(--line); }
-[data-testid="stSidebar"] * { font-family: 'IBM Plex Mono', monospace; }
-button[data-baseweb="tab"] {
-    font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.05em; color: var(--muted);
-}
-button[data-baseweb="tab"][aria-selected="true"] { color: var(--accent); }
-div[data-baseweb="tab-highlight"] { background-color: var(--accent); }
-[data-testid="stDataFrame"], .stSelectbox > div, .stTextArea textarea { border-radius: 6px; }
-.stCaption, small { color: var(--muted) !important; }
-hr { border-color: var(--line) !important; }
+html, body, [class*="css"] { font-family:'Inter',sans-serif; }
+#MainMenu, footer, header[data-testid="stHeader"] { visibility:hidden; height:0; }
+.block-container { padding-top:2rem; max-width:1100px; }
+
+h1 { font-size:1.5rem !important; font-weight:600 !important; color:var(--text) !important;
+     letter-spacing:0.01em; display:flex; align-items:center; gap:10px; }
+h1::before { content:"S"; display:inline-flex; align-items:center; justify-content:center;
+     width:30px; height:30px; border-radius:8px; background:var(--accent);
+     color:var(--bg); font-size:17px; font-weight:600; }
+
+.sub { color:var(--dim); font-size:13px; margin:-6px 0 20px 40px; }
+
+.cardrow { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:24px; }
+.metric { border-radius:12px; padding:16px 18px; }
+.metric .lbl { font-size:12px; margin-bottom:6px; }
+.metric .val { color:var(--text); font-size:28px; font-weight:600; line-height:1; }
+.m-buy { background:var(--buy-bg); } .m-buy .lbl { color:var(--buy); }
+.m-short { background:var(--short-bg); } .m-short .lbl { color:var(--short); }
+.m-hold { background:var(--card2); } .m-hold .lbl { color:var(--muted); }
+
+.section { color:var(--muted); font-size:12px; font-weight:600; letter-spacing:0.06em;
+     margin:4px 0 12px; text-transform:uppercase; }
+
+.setup { background:var(--card); border-radius:12px; padding:14px 16px; margin-bottom:8px;
+     display:flex; align-items:center; justify-content:space-between; }
+.setup .left { display:flex; align-items:center; gap:12px; }
+.pill { font-size:11px; font-weight:600; padding:4px 9px; border-radius:6px; }
+.pill.buy { background:var(--buy-bg); color:var(--buy); }
+.pill.short { background:var(--short-bg); color:var(--short); }
+.setup .tkr { color:var(--text); font-size:15px; font-weight:600; line-height:1.2; }
+.setup .meta { color:var(--dim); font-size:11px; }
+.setup .price { color:var(--text); font-size:15px; text-align:right; line-height:1.2; }
+.setup .chg { font-size:12px; text-align:right; }
+.up { color:var(--buy); } .down { color:var(--short); }
+
+button[data-baseweb="tab"] { font-family:'Inter',sans-serif; color:var(--muted); font-size:13px; }
+button[data-baseweb="tab"][aria-selected="true"] { color:var(--accent); }
+div[data-baseweb="tab-highlight"] { background-color:var(--accent); }
+[data-testid="stSidebar"] { background:var(--bg); border-right:1px solid var(--line); }
+[data-testid="stSidebar"] * { font-family:'Inter',sans-serif; }
+.stCaption, small { color:var(--dim) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -117,19 +118,16 @@ def signal_age(sig, close):
     entry = float(close.iloc[flip_pos])
     since = sig.index[flip_pos]
     chg = (float(close.iloc[-1]) / entry - 1) * 100
-    days_str = f"{days}+" if capped else str(days)
-    return days_str, f"{since:%m-%d}", entry, chg
+    return (f"{days}+" if capped else str(days)), f"{since:%m-%d}", entry, chg
 
 
 def backtest(sig, close):
-    """Long while BUY, short while SHORT, flat on HOLD; act next day."""
     pos = sig.map({"BUY": 1, "SHORT": -1, "HOLD": 0}).shift(1).fillna(0)
     ret = close.pct_change().fillna(0)
     strat = float((1 + pos * ret).prod() - 1)
     bh = float(close.iloc[-1] / close.iloc[0] - 1)
     trades, cur, entry_i = [], 0, None
-    vals = pos.tolist()
-    for i, p in enumerate(vals):
+    for i, p in enumerate(pos.tolist()):
         if p != cur:
             if cur != 0 and entry_i is not None:
                 trades.append((float(close.iloc[i - 1]) / float(close.iloc[entry_i]) - 1) * cur)
@@ -137,8 +135,8 @@ def backtest(sig, close):
     if cur != 0 and entry_i is not None:
         trades.append((float(close.iloc[-1]) / float(close.iloc[entry_i]) - 1) * cur)
     wins = sum(1 for t in trades if t > 0)
-    win_rate = wins / len(trades) * 100 if trades else 0.0
-    return strat * 100, bh * 100, len(trades), win_rate
+    wr = wins / len(trades) * 100 if trades else 0.0
+    return strat * 100, bh * 100, len(trades), wr
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -147,11 +145,11 @@ def load(tickers, period, bucket):
                        progress=False, auto_adjust=True, group_by="ticker")
 
 
-st.title("STOCK SCANNER")
+st.title("Stock Scanner")
 if not tickers:
     st.info("Add a ticker in the sidebar."); st.stop()
 
-bucket = int(time.time() // 60) if live else 0
+bucket = int(datetime.now().timestamp() // 60) if live else 0
 with st.spinner(f"Scanning {len(tickers)} tickers..."):
     raw = load(tickers, period, bucket)
 if raw is None:
@@ -160,21 +158,18 @@ if raw is None:
 rows, bt_rows, failed = [], [], []
 for t in tickers:
     try:
-        close_full = raw[t]["Close"].dropna() if len(tickers) > 1 else raw["Close"].dropna()
-        if len(close_full) < 60: failed.append(t); continue
-        sig_series, close_v, r = daily_signals(close_full)
-        if sig_series.empty: failed.append(t); continue
-        s = sig_series.iloc[-1]
-        days, since, entry, chg_since = signal_age(sig_series, close_v)
-        rows.append({
-            "ticker": t, "signal": s, "days": days, "since": since,
-            "entry": entry, "chg_since_%": chg_since,
-            "close": float(close_v.iloc[-1]),
-            "chg_1d_%": (float(close_v.iloc[-1]) / float(close_v.iloc[-2]) - 1) * 100,
-            "rsi": r["rsi"],
-            "reasons": reasons_text(r, float(close_v.iloc[-1])),
-        })
-        strat, bh, ntr, wr = backtest(sig_series, close_v)
+        cf = raw[t]["Close"].dropna() if len(tickers) > 1 else raw["Close"].dropna()
+        if len(cf) < 60: failed.append(t); continue
+        ss, cv, r = daily_signals(cf)
+        if ss.empty: failed.append(t); continue
+        sgn = ss.iloc[-1]
+        days, since, entry, chg_since = signal_age(ss, cv)
+        rows.append({"ticker": t, "signal": sgn, "days": days, "since": since,
+                     "entry": entry, "chg_since_%": chg_since,
+                     "close": float(cv.iloc[-1]),
+                     "chg_1d_%": (float(cv.iloc[-1]) / float(cv.iloc[-2]) - 1) * 100,
+                     "rsi": r["rsi"], "reasons": reasons_text(r, float(cv.iloc[-1]))})
+        strat, bh, ntr, wr = backtest(ss, cv)
         bt_rows.append({"ticker": t, "strategy_%": strat, "buy_hold_%": bh,
                         "edge_%": strat - bh, "trades": ntr, "win_rate_%": wr})
     except Exception:
@@ -189,88 +184,80 @@ b = int((df["signal"] == "BUY").sum())
 s = int((df["signal"] == "SHORT").sum())
 h = len(df) - b - s
 
-live_txt = (f'<span class="sep">|</span><span class="live">LIVE '
-            f'{datetime.now():%H:%M:%S}</span>') if live else ""
-st.markdown(
-    f'<div class="status">{date.today():%a %d %b %Y}'
-    f'<span class="sep">|</span><b>{len(df)}</b> scanned'
-    f'<span class="sep">|</span><span class="buy">{b} buy</span>'
-    f'<span class="sep">|</span><span class="short">{s} short</span>'
-    f'<span class="sep">|</span>{h} hold{live_txt}</div>',
-    unsafe_allow_html=True,
-)
+upd = f" &middot; live {datetime.now():%H:%M:%S}" if live else ""
+st.markdown(f'<div class="sub">{len(df)} scanned &middot; {date.today():%a %d %b %Y}{upd}</div>',
+            unsafe_allow_html=True)
 
-alerts = df[df["signal"] != "HOLD"]
-if not alerts.empty:
-    parts = [f'<span class="{str(r.signal).lower()}">{r.signal}</span> {r.ticker} ({r.days}d)'
-             for r in alerts.itertuples()]
-    st.markdown('<div class="alertline">' + '&nbsp;&nbsp;&middot;&nbsp;&nbsp;'.join(parts) + '</div>',
-                unsafe_allow_html=True)
-    if not live:
-        st.toast(f"{len(alerts)} setup(s) found")
-        st.markdown(
-            '<audio autoplay><source '
-            'src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" '
-            'type="audio/ogg"></audio>',
-            unsafe_allow_html=True,
-        )
+st.markdown(
+    f'<div class="cardrow">'
+    f'<div class="metric m-buy"><div class="lbl">Buy setups</div><div class="val">{b}</div></div>'
+    f'<div class="metric m-short"><div class="lbl">Short setups</div><div class="val">{s}</div></div>'
+    f'<div class="metric m-hold"><div class="lbl">Holding</div><div class="val">{h}</div></div>'
+    f'</div>', unsafe_allow_html=True)
+
+
+def setup_card(r):
+    cls = "buy" if r["signal"] == "BUY" else "short"
+    ch = r["chg_1d_%"]
+    updown = "up" if ch >= 0 else "down"
+    sign = "+" if ch >= 0 else ""
+    return (f'<div class="setup"><div class="left">'
+            f'<span class="pill {cls}">{r["signal"]}</span>'
+            f'<div><div class="tkr">{r["ticker"]}</div>'
+            f'<div class="meta">{r["days"]} sessions &middot; since {r["since"]}</div></div></div>'
+            f'<div><div class="price">{r["close"]:.2f}</div>'
+            f'<div class="chg {updown}">{sign}{ch:.2f}%</div></div></div>')
 
 
 def cs(v):
-    if v == "BUY": return "color:#2FBF8F;font-weight:600"
-    if v == "SHORT": return "color:#E5484D;font-weight:600"
+    if v == "BUY": return "color:#4FD1A0;font-weight:600"
+    if v == "SHORT": return "color:#F0837F;font-weight:600"
     return "color:#8A94A6"
 
 
 def cc(v):
-    try: return "color:#2FBF8F" if v >= 0 else "color:#E5484D"
+    try: return "color:#4FD1A0" if v >= 0 else "color:#F0837F"
     except TypeError: return ""
 
 
-cols = ["ticker", "signal", "days", "since", "entry", "chg_since_%",
-        "close", "chg_1d_%", "rsi", "reasons"]
+tab_setups, tab_all, tab_bt = st.tabs(["Setups", "All tickers", "Backtest"])
 
+with tab_setups:
+    setups = df[df["signal"] != "HOLD"].copy()
+    order = {"BUY": 0, "SHORT": 1}
+    setups = setups.sort_values("signal", key=lambda c: c.map(order))
+    if setups.empty:
+        st.info("No buy or short setups right now. Everything is holding.")
+    else:
+        st.markdown('<div class="section">Setups today</div>', unsafe_allow_html=True)
+        st.markdown("".join(setup_card(r) for _, r in setups.iterrows()),
+                    unsafe_allow_html=True)
 
-def styled(d):
-    return (d[cols].style
-            .map(cs, subset=["signal"])
-            .map(cc, subset=["chg_since_%", "chg_1d_%"])
-            .format(precision=2))
-
-
-t1, t2, t3 = st.tabs(["ALL TICKERS", "SETUPS", "BACKTEST"])
-with t1: st.dataframe(styled(df), use_container_width=True, height=560)
-with t2:
-    st_df = df[df["signal"] != "HOLD"]
-    if st_df.empty: st.info("No buy/short setups right now.")
-    else: st.dataframe(styled(st_df), use_container_width=True, height=400)
-with t3:
-    bt_sorted = bt.sort_values("edge_%", ascending=False)
+with tab_all:
+    cols = ["ticker", "signal", "days", "since", "entry", "chg_since_%",
+            "close", "chg_1d_%", "rsi", "reasons"]
     st.dataframe(
-        bt_sorted.style
-        .map(cc, subset=["strategy_%", "buy_hold_%", "edge_%"])
-        .format(precision=1),
-        use_container_width=True, height=520,
-    )
-    avg_edge = bt["edge_%"].mean()
+        df[cols].style.map(cs, subset=["signal"])
+        .map(cc, subset=["chg_since_%", "chg_1d_%"]).format(precision=2),
+        use_container_width=True, height=560)
+
+with tab_bt:
+    bts = bt.sort_values("edge_%", ascending=False)
+    st.dataframe(
+        bts.style.map(cc, subset=["strategy_%", "buy_hold_%", "edge_%"]).format(precision=1),
+        use_container_width=True, height=520)
     beat = int((bt["edge_%"] > 0).sum())
-    st.caption(
-        f"Following every signal over the loaded {period} beat buy-and-hold on "
-        f"{beat} of {len(bt)} tickers (avg edge {avg_edge:+.1f}%). "
-        "Simulated on daily closes, no fees or slippage. Past results do not predict future ones."
-    )
+    st.caption(f"Following every signal over {period} beat buy-and-hold on {beat} of "
+               f"{len(bt)} tickers (avg edge {bt['edge_%'].mean():+.1f}%). "
+               "Simulated on daily closes, no fees. Past results do not predict future ones.")
 
 st.divider()
 pick = st.selectbox("Chart", df["ticker"])
-close_c = raw[pick]["Close"].dropna() if len(tickers) > 1 else raw["Close"].dropna()
-st.line_chart(
-    pd.DataFrame({"Close": close_c,
-                  "SMA 20": close_c.rolling(20).mean(),
-                  "SMA 50": close_c.rolling(50).mean()}),
-    height=380,
-    color=["#E8A13D", "#5B6B85", "#33415C"],
-)
+cc2 = raw[pick]["Close"].dropna() if len(tickers) > 1 else raw["Close"].dropna()
+st.line_chart(pd.DataFrame({"Close": cc2, "SMA 20": cc2.rolling(20).mean(),
+                            "SMA 50": cc2.rolling(50).mean()}),
+              height=360, color=["#3DD9B0", "#5B6B85", "#33415C"])
 row = df[df["ticker"] == pick].iloc[0]
-st.markdown(f"`{pick}`  {row['signal']} since {row['since']}  |  "
-            f"{row['days']} sessions  |  {row['chg_since_%']:+.1f}% since signal  |  {row['reasons']}")
+st.markdown(f"`{pick}`  {row['signal']} since {row['since']}  |  {row['days']} sessions  |  "
+            f"{row['chg_since_%']:+.1f}% since signal  |  {row['reasons']}")
 st.caption("Simple indicator rules (RSI, MACD, SMA, Bollinger). Screening ideas, not financial advice.")
