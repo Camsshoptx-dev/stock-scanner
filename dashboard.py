@@ -39,12 +39,10 @@ st.markdown("""
 .stApp { background: var(--bg); }
 html, body, [class*="css"] { font-family:'Inter',sans-serif; }
 #MainMenu, footer { visibility:hidden; height:0; }
-/* Hide the toolbar chrome but NOT the whole header — the sidebar toggle
-   lives inside the header, and hiding it leaves no way to open the sidebar. */
+/* Deliberately NOT hiding stHeader or stToolbar: depending on the Streamlit
+   version, the sidebar open/close control lives inside one of them, and
+   hiding it leaves no way to reach the sidebar at all. */
 header[data-testid="stHeader"] { background:transparent; }
-[data-testid="stToolbar"] { visibility:hidden; height:0; }
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="collapsedControl"] { visibility:visible !important; z-index:999; }
 .block-container { padding-top:2rem; max-width:1100px; }
 
 h1 { font-size:1.5rem !important; font-weight:600 !important; color:var(--text) !important;
@@ -136,18 +134,6 @@ max_age = st.sidebar.slider("Expire signal after (bars)", 3, 30, 10)
 use_veto = st.sidebar.toggle("SMA20 veto", value=True,
                              help="Never short above the 20 SMA, never buy below it.")
 live = st.sidebar.toggle("Live refresh (60s)", value=False)
-
-st.sidebar.header("Options")
-opt_enable = st.sidebar.toggle("Scan options on setups", value=False,
-                               help="Pulls option chains for tickers currently "
-                                    "showing BUY or SHORT. Slow — one request "
-                                    "per expiration per ticker.")
-opt_target_delta = st.sidebar.slider("Target delta", 0.15, 0.70, 0.40, 0.05,
-                                     help="0.40 is roughly at-the-money-ish. "
-                                          "Below 0.20 is lottery-ticket territory.")
-opt_min_dte = st.sidebar.slider("Min days to expiration", 7, 60, 21)
-opt_max_dte = st.sidebar.slider("Max days to expiration", 21, 120, 60)
-opt_min_oi = st.sidebar.number_input("Min open interest", 0, 5000, 100, 50)
 
 FAST, SLOW, RSI_N, BB_N = 20, 50, 14, 20
 MIN_BARS = SLOW + 10
@@ -515,49 +501,75 @@ with tab_all:
 with tab_opt:
     if not OPTIONS_OK:
         st.error("`options_scanner.py` not found. Drop it in this folder and reload.")
-    elif not opt_enable:
-        st.info("Turn on **Scan options on setups** in the sidebar. "
-                "It only pulls chains for tickers already showing BUY or SHORT, "
-                "so it stays cheap.")
     else:
-        live_setups = df[df["signal"] != "HOLD"]
-        live_setups = live_setups[~live_setups["ticker"].str.endswith("=F")]
-        if live_setups.empty:
-            st.info("No equity setups right now, so there is nothing to price. "
-                    "Futures options are not covered here.")
+        # These live in the tab, not only the sidebar, so the feature is
+        # reachable on mobile and on any Streamlit version regardless of
+        # whether the sidebar control is rendered.
+        c1, c2, c3 = st.columns([2, 1, 1])
+        with c1:
+            opt_enable = st.toggle(
+                "Scan options on setups", value=False, key="opt_go",
+                help="Pulls option chains for tickers currently showing BUY or "
+                     "SHORT. Slow — one request per expiration per ticker.")
+        with c2:
+            opt_target_delta = st.slider("Target delta", 0.15, 0.70, 0.40, 0.05,
+                                         key="opt_delta")
+        with c3:
+            opt_min_oi = st.number_input("Min open interest", 0, 5000, 100, 50,
+                                         key="opt_oi")
+        d1, d2 = st.columns(2)
+        with d1:
+            opt_min_dte = st.slider("Min days to expiration", 7, 60, 21, key="opt_lo")
+        with d2:
+            opt_max_dte = st.slider("Max days to expiration", 21, 120, 60, key="opt_hi")
+
+        if opt_min_dte >= opt_max_dte:
+            st.warning("Min days must be below max days.")
+            st.stop()
+
+        if not opt_enable:
+            st.info("Flip the toggle above to price the current setups. "
+                    "It only pulls chains for tickers already showing BUY or "
+                    "SHORT, so it stays cheap.")
         else:
-            smap = dict(zip(live_setups["ticker"], live_setups["signal"]))
-            with st.spinner(f"Pulling chains for {len(smap)} ticker(s)..."):
-                try:
-                    opts = options_scanner.best_contracts(
-                        list(smap.keys()), signal_map=smap,
-                        target_delta=opt_target_delta,
-                        min_dte=opt_min_dte, max_dte=opt_max_dte,
-                        min_open_interest=int(opt_min_oi))
-                except Exception as e:
-                    opts = []
-                    st.error(f"Options fetch failed: {e}")
-
-            if not opts:
-                st.warning("Nothing cleared the liquidity filters. That is a normal "
-                           "result — most contracts on most names are not worth "
-                           "trading. Loosen open interest or widen the DTE window "
-                           "if you want to see what got cut.")
+            live_setups = df[df["signal"] != "HOLD"]
+            live_setups = live_setups[~live_setups["ticker"].str.endswith("=F")]
+            if live_setups.empty:
+                st.info("No equity setups right now, so there is nothing to price. "
+                        "Futures options are not covered here.")
             else:
-                st.markdown('<div class="section">Cheapest sane way to express each setup</div>',
-                            unsafe_allow_html=True)
-                st.markdown("".join(option_card(o) for o in opts),
-                            unsafe_allow_html=True)
+                smap = dict(zip(live_setups["ticker"], live_setups["signal"]))
+                with st.spinner(f"Pulling chains for {len(smap)} ticker(s)..."):
+                    try:
+                        opts = options_scanner.best_contracts(
+                            list(smap.keys()), signal_map=smap,
+                            target_delta=opt_target_delta,
+                            min_dte=opt_min_dte, max_dte=opt_max_dte,
+                            min_open_interest=int(opt_min_oi))
+                    except Exception as e:
+                        opts = []
+                        st.error(f"Options fetch failed: {e}")
 
-                worst = min(opts, key=lambda o: o["prob_itm"])
-                st.caption(
-                    f"Probability ITM is the risk-neutral N(d2) from Black-Scholes on "
-                    f"the chain's own implied vol — it is the market's estimate, not "
-                    f"mine. Lowest on screen is {worst['ticker']} at "
-                    f"{worst['prob_itm']:.0f}%. Anything under 20% loses its full "
-                    f"premium most of the time, and the decay column is how fast that "
-                    f"happens while you wait. Contracts are 100 shares, so the cost "
-                    f"shown is real money per contract.")
+                if not opts:
+                    st.warning("Nothing cleared the liquidity filters. That is a normal "
+                               "result — most contracts on most names are not worth "
+                               "trading. Loosen open interest or widen the DTE window "
+                               "if you want to see what got cut.")
+                else:
+                    st.markdown('<div class="section">Cheapest sane way to express each setup</div>',
+                                unsafe_allow_html=True)
+                    st.markdown("".join(option_card(o) for o in opts),
+                                unsafe_allow_html=True)
+
+                    worst = min(opts, key=lambda o: o["prob_itm"])
+                    st.caption(
+                        f"Probability ITM is the risk-neutral N(d2) from Black-Scholes on "
+                        f"the chain's own implied vol — it is the market's estimate, not "
+                        f"mine. Lowest on screen is {worst['ticker']} at "
+                        f"{worst['prob_itm']:.0f}%. Anything under 20% loses its full "
+                        f"premium most of the time, and the decay column is how fast that "
+                        f"happens while you wait. Contracts are 100 shares, so the cost "
+                        f"shown is real money per contract.")
 
 with tab_bt:
     bts = bt.sort_values("edge_%", ascending=False)
