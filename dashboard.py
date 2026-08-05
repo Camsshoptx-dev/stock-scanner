@@ -24,6 +24,12 @@ try:
 except ImportError:
     OPTIONS_OK = False
 
+try:
+    import coins_scanner
+    COINS_OK = True
+except ImportError:
+    COINS_OK = False
+
 st.set_page_config(page_title="Stock Scanner", layout="wide",
                    initial_sidebar_state="expanded")
 
@@ -472,8 +478,90 @@ def option_card(o):
         f'</div></div>')
 
 
-tab_setups, tab_all, tab_opt, tab_bt = st.tabs(
-    ["Setups", "All tickers", "Options", "Backtest"])
+def coin_row(r):
+    """One pair as a card. Liquidity and your own slippage lead."""
+    risk = int(r["risk"])
+    cls = "buy" if risk <= 2 else ("warn" if risk <= 6 else "short")
+    label = "clean" if risk <= 2 else ("caution" if risk <= 6 else "high risk")
+
+    def money(v):
+        if pd.isna(v):
+            return "\u2014"
+        if abs(v) >= 1e9:
+            return f"${v/1e9:.1f}B"
+        if abs(v) >= 1e6:
+            return f"${v/1e6:.1f}M"
+        if abs(v) >= 1e3:
+            return f"${v/1e3:.0f}k"
+        return f"${v:,.0f}"
+
+    px = r["price_usd"]
+    if pd.isna(px):
+        px_s = "\u2014"
+    elif px < 0.01:
+        px_s = f"${px:.8f}".rstrip("0").rstrip(".")
+    else:
+        px_s = f"${px:,.4f}".rstrip("0").rstrip(".")
+
+    c1 = r["chg_1h"]
+    c1_s = f"{c1:+.1f}%" if pd.notna(c1) else "\u2014"
+    c1_c = "pos" if (pd.notna(c1) and c1 >= 0) else "neg"
+
+    age = r["age_h"]
+    if pd.isna(age):
+        age_s = "\u2014"
+    elif age < 1:
+        age_s = f"{age*60:.0f}m"
+    elif age < 48:
+        age_s = f"{age:.0f}h"
+    else:
+        age_s = f"{age/24:.0f}d"
+
+    imp = r["impact_pct"]
+    imp_s = f"{imp:.2f}%" if pd.notna(imp) else "\u2014"
+    imp_c = "bad" if (pd.notna(imp) and imp > 3) else (
+        "mid" if (pd.notna(imp) and imp > 1) else "good")
+
+    liq = r["liquidity"]
+    liq_c = "bad" if (pd.notna(liq) and liq < 20_000) else (
+        "mid" if (pd.notna(liq) and liq < 100_000) else "good")
+
+    bs = r["buy_share_1h"]
+    bs_s = f"{bs:.0f}%" if pd.notna(bs) else "\u2014"
+
+    # NaN is truthy, so `x or ""` does NOT sanitise it — same trap that
+    # crashed the options scanner. Test explicitly.
+    mint = r["mint"] if isinstance(r["mint"], str) else ""
+    mint_s = f"{mint[:4]}...{mint[-4:]}" if len(mint) > 12 else (mint or "\u2014")
+    url = r["url"] if isinstance(r.get("url"), str) else ""
+    link = (f' <a href="{url}" target="_blank" '
+            f'style="color:var(--accent);font-size:11px">chart</a>') if url else ""
+
+    return (
+        f'<div class="opt"><div class="top">'
+        f'<div><span class="pill {cls}">{label}</span> '
+        f'<span class="contract">{r["symbol"]}</span> '
+        f'<span style="color:var(--dim);font-size:11px">{r["dex"]} \u00b7 '
+        f'{mint_s}{link}</span></div>'
+        f'<div class="cost">{px_s}<small class="{c1_c}">{c1_s} 1h</small></div>'
+        f'</div><div class="grid5">'
+        f'<div class="cell"><div class="k">Liquidity</div>'
+        f'<div class="v {liq_c}">{money(liq)}</div></div>'
+        f'<div class="cell"><div class="k">24h volume</div>'
+        f'<div class="v">{money(r["vol_24h"])}</div></div>'
+        f'<div class="cell"><div class="k">Your slippage</div>'
+        f'<div class="v {imp_c}">{imp_s}</div></div>'
+        f'<div class="cell"><div class="k">Max @ 2%</div>'
+        f'<div class="v">{money(r["max_size_2pct"])}</div></div>'
+        f'<div class="cell"><div class="k">Age / buys 1h</div>'
+        f'<div class="v">{age_s} / {bs_s}</div></div>'
+        f'</div>'
+        f'<div style="color:var(--dim);font-size:11px;margin-top:8px">'
+        f'{r["risk_notes"]}</div></div>')
+
+
+tab_setups, tab_all, tab_opt, tab_coins, tab_bt = st.tabs(
+    ["Setups", "All tickers", "Options", "Memecoins", "Backtest"])
 
 with tab_setups:
     setups = df[df["signal"] != "HOLD"].copy()
@@ -570,6 +658,85 @@ with tab_opt:
                         f"premium most of the time, and the decay column is how fast that "
                         f"happens while you wait. Contracts are 100 shares, so the cost "
                         f"shown is real money per contract.")
+
+with tab_coins:
+    if not COINS_OK:
+        st.error("`coins_scanner.py` not found. Drop it in this folder and reload.")
+    else:
+        st.markdown('<div class="section">Solana token check</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Paste the mint address from Axiom — not the ticker. Symbols are "
+            "reused by impostor tokens constantly; the mint is the only thing "
+            "that identifies a token uniquely.")
+
+        q1, q2, q3 = st.columns([3, 1, 1])
+        with q1:
+            coin_q = st.text_input("Mint address or symbol", "",
+                                   placeholder="DezXAZ8z7Pnrn...  or  bonk",
+                                   key="coin_q")
+        with q2:
+            coin_size = st.number_input("Order size $", 10, 100_000, 250, 10,
+                                        key="coin_size")
+        with q3:
+            coin_min_vol = st.number_input("Hide vol under $", 0, 1_000_000,
+                                           1000, 500, key="coin_minvol")
+
+        if not coin_q.strip():
+            st.info("Enter a mint address or symbol above to check liquidity, "
+                    "age, buy/sell skew, and how far your order moves the price.")
+        else:
+            with st.spinner("Querying DexScreener..."):
+                try:
+                    cdf = coins_scanner.check(coin_q.strip(),
+                                              trade_size_usd=float(coin_size))
+                except Exception as e:
+                    cdf = pd.DataFrame()
+                    st.error(f"Lookup failed: {e}")
+
+            if cdf.empty:
+                st.warning(f"No Solana pairs found for `{coin_q}`. If you pasted a "
+                           f"mint address, the pool may not be indexed yet — very "
+                           f"new pairs can take a few minutes to appear.")
+            else:
+                total = len(cdf)
+                live = cdf[cdf["vol_24h"].fillna(0) >= coin_min_vol]
+                hidden = total - len(live)
+
+                if live.empty:
+                    st.warning(
+                        f"All {total} pair(s) fall under ${coin_min_vol:,} daily "
+                        f"volume. Dormant pools — the liquidity number is real but "
+                        f"nobody is trading, so it is not an exit.")
+                else:
+                    a, b, c = st.columns(3)
+                    top = live.iloc[0]
+                    a.metric("Pairs found", total)
+                    b.metric("Best liquidity",
+                             f"${live['liquidity'].max():,.0f}"
+                             if pd.notna(live["liquidity"].max()) else "—")
+                    c.metric(f"Slippage on ${coin_size:,.0f}",
+                             f"{top['impact_pct']:.2f}%"
+                             if pd.notna(top["impact_pct"]) else "—")
+
+                    st.markdown("".join(coin_row(r) for _, r in live.head(8).iterrows()),
+                                unsafe_allow_html=True)
+
+                    if hidden:
+                        st.caption(f"{hidden} dormant pair(s) hidden below the "
+                                   f"${coin_min_vol:,} volume floor.")
+                    if total > 1:
+                        st.caption(
+                            f"{total} pairs share this ticker. Match the mint against "
+                            f"Axiom before trading — the wrong one is a total loss, "
+                            f"not a bad entry.")
+
+                st.warning(
+                    "DexScreener reports market data only. It cannot tell you whether "
+                    "the LP is burned or locked, whether mint authority was revoked, "
+                    "whether freeze authority is live, or how much supply the deployer "
+                    "holds. Those are the actual rug mechanics — check RugCheck or the "
+                    "chain directly. A token can score clean here and still be a honeypot.")
 
 with tab_bt:
     bts = bt.sort_values("edge_%", ascending=False)
