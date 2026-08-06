@@ -33,6 +33,13 @@ except ImportError:
 st.set_page_config(page_title="Stock Scanner", layout="wide",
                    initial_sidebar_state="expanded")
 
+# Mobile layout. Must come after set_page_config, before anything renders.
+try:
+    import mobile
+    mobile.inject()
+except ImportError:
+    pass
+
 # ---------------------------------------------------------------- style
 
 st.markdown("""
@@ -50,6 +57,19 @@ html, body, [class*="css"] { font-family:'Inter',sans-serif; }
    hiding it leaves no way to reach the sidebar at all. */
 header[data-testid="stHeader"] { background:transparent; }
 .block-container { padding-top:2rem; max-width:1100px; }
+
+.setup { flex-wrap:wrap; }
+.mtf { display:flex; gap:5px; flex-wrap:wrap; margin-top:9px;
+       flex-basis:100%; align-items:center; }
+.mtf b { font-size:9px; letter-spacing:.07em; color:var(--dim);
+         text-transform:uppercase; font-weight:600; }
+.mcell { font-size:10.5px; font-weight:600; padding:3px 7px; border-radius:4px;
+         background:var(--card2); color:var(--muted);
+         border:1px solid var(--line); font-variant-numeric:tabular-nums; }
+.mcell.pos { background:var(--buy-bg); color:var(--buy); }
+.mcell.neg { background:var(--short-bg); color:var(--short); }
+.mcell.na { opacity:.4; }
+.mcell i { font-style:normal; opacity:.65; font-weight:500; }
 
 h1 { font-size:1.5rem !important; font-weight:600 !important; color:var(--text) !important;
      letter-spacing:0.01em; display:flex; align-items:center; gap:10px; }
@@ -126,25 +146,118 @@ tickers = [t.strip().upper() for t in
 
 st.sidebar.header("Timeframes")
 eq_period = st.sidebar.selectbox("Equity history", ["6mo", "1y", "2y"], index=1)
-fut_interval = st.sidebar.selectbox("Futures interval", ["5m", "15m", "30m", "1h"], index=1)
+fut_interval = st.sidebar.selectbox(
+    "Futures interval", ["1m", "2m", "5m", "15m", "30m", "1h"], index=3,
+    help="Indicator lengths, thresholds and expiry all rescale with this. "
+         "1m only has 7 days of history available.")
 scan_futures_intraday = st.sidebar.toggle("Scan futures intraday", value=True,
                                           help="Off = treat futures like equities on daily bars.")
 
 st.sidebar.header("Signal rules")
 rsi_buy = st.sidebar.slider("RSI oversold (buy)", 10, 40, 30)
 rsi_short = st.sidebar.slider("RSI overbought (short)", 60, 90, 70)
-threshold = st.sidebar.slider("Score threshold", 2, 5, 3,
-                              help="Higher = fewer, higher-conviction signals. "
-                                   "Score runs -6 to +6.")
+threshold = st.sidebar.slider(
+    "Score threshold", 2, 5, 3,
+    help="Score runs -6 to +6, but 4+ is unreachable in practice: the trend "
+         "terms and the RSI term cancel during real moves. Above 3 the "
+         "scanner goes almost completely silent.")
+if threshold > 3:
+    st.sidebar.warning("Above 3 will produce very few or zero signals.")
 max_age = st.sidebar.slider("Expire signal after (bars)", 3, 30, 10)
 use_veto = st.sidebar.toggle("SMA20 veto", value=True,
                              help="Never short above the 20 SMA, never buy below it.")
+use_confirm = st.sidebar.toggle(
+    "Confirmation bars", value=True,
+    help="Score must hold past the threshold for several consecutive bars on "
+         "fast timeframes before a signal opens. Cut signal flips by ~60% on "
+         "1m bars in testing.")
+use_trend_rsi = st.sidebar.toggle(
+    "Trend-aware RSI", value=True,
+    help="Stop RSI fading a trend that price and structure already confirm. "
+         "Without it the score pins near +/-1 during real moves and most "
+         "tickers sit on HOLD at score 1 or 2.")
 live = st.sidebar.toggle("Live refresh (60s)", value=False)
 
-FAST, SLOW, RSI_N, BB_N = 20, 50, 14, 20
-MIN_BARS = SLOW + 10
+st.sidebar.header("Multi-timeframe")
+show_mtf = st.sidebar.toggle(
+    "Score on every timeframe", value=True,
+    help="Scores each ticker on all selected timeframes so a name never "
+         "silently vanishes when you switch intervals.")
+mtf_list = st.sidebar.multiselect(
+    "Compare", ["1m", "2m", "5m", "15m", "30m", "1h", "1d"],
+    default=["5m", "15m", "30m", "1h", "1d"],
+    help="Each one is an extra download.", disabled=not show_mtf)
+if not show_mtf:
+    mtf_list = []
+
 ROLL_GAP = 0.02          # single-bar move that suggests a contract roll splice
-STALE_H = {"1d": 48, "1h": 4, "30m": 2, "15m": 2, "5m": 1}
+
+# ---------------------------------------------------------------- timeframes
+# One row per bar size. A 20/50 SMA means 50 days on a daily chart and 50
+# minutes on a 1m chart — the same numbers describe completely different
+# things. Everything that should move with the bar size lives here.
+#
+#   period    yfinance caps intraday history (1m -> 7d, 2m/5m/15m/30m -> 60d,
+#             1h -> 730d). Over the cap it returns an EMPTY frame, not an
+#             error, so every ticker "fails" for no visible reason.
+#   entry     keep at 3. The score cannot reach 4 in practice — see trend_rsi.
+#   confirm   score must hold past entry for this many CONSECUTIVE bars before
+#             a signal opens. Measured ~60% fewer signal flips on 1m noise.
+#   trend_rsi the score mixes trend terms (MACD, SMA cross, price vs SMA) with
+#             mean-reversion terms (RSI extreme, Bollinger). In a real move
+#             they cancel: on a clean uptrend the trend terms average +1.97
+#             while RSI averages -1.98, pinning the score near +1 and leaving
+#             everything on HOLD. This stops RSI fading a trend that price and
+#             structure both confirm.
+TF_PROFILES = {
+    "1m":  dict(period="5d",   fast=9,  slow=21, rsi_n=7,  bb_n=20,
+                rsi_buy=25, rsi_short=75, macd=(6, 13, 5), trend_rsi=True,
+                entry=3, exit=0, confirm=3, max_age=30,
+                veto_buf=0.0004, min_bars=60, stale_h=0.5),
+    "2m":  dict(period="10d",  fast=9,  slow=21, rsi_n=9,  bb_n=20,
+                rsi_buy=27, rsi_short=73, macd=(8, 17, 6), trend_rsi=True,
+                entry=3, exit=0, confirm=2, max_age=30,
+                veto_buf=0.0006, min_bars=60, stale_h=0.75),
+    "5m":  dict(period="60d",  fast=12, slow=30, rsi_n=9,  bb_n=20,
+                rsi_buy=27, rsi_short=73, macd=(8, 17, 6), trend_rsi=True,
+                entry=3, exit=0, confirm=2, max_age=36,
+                veto_buf=0.0008, min_bars=70, stale_h=1),
+    "15m": dict(period="60d",  fast=20, slow=50, rsi_n=14, bb_n=20,
+                rsi_buy=30, rsi_short=70, macd=(12, 26, 9), trend_rsi=True,
+                entry=3, exit=0, confirm=1, max_age=26,
+                veto_buf=0.0015, min_bars=60, stale_h=2),
+    "30m": dict(period="60d",  fast=20, slow=50, rsi_n=14, bb_n=20,
+                rsi_buy=30, rsi_short=70, macd=(12, 26, 9), trend_rsi=False,
+                entry=3, exit=0, confirm=1, max_age=20,
+                veto_buf=0.0020, min_bars=60, stale_h=3),
+    "1h":  dict(period="180d", fast=20, slow=50, rsi_n=14, bb_n=20,
+                rsi_buy=30, rsi_short=70, macd=(12, 26, 9), trend_rsi=False,
+                entry=3, exit=1, confirm=0, max_age=16,
+                veto_buf=0.0025, min_bars=60, stale_h=4),
+    "1d":  dict(period=eq_period, fast=20, slow=50, rsi_n=14, bb_n=20,
+                rsi_buy=30, rsi_short=70, macd=(12, 26, 9), trend_rsi=False,
+                entry=3, exit=1, confirm=0, max_age=10,
+                veto_buf=0.0015, min_bars=60, stale_h=48),
+}
+TF_ORDER = ["1m", "2m", "5m", "15m", "30m", "1h", "1d"]
+
+
+def prof(interval):
+    """Profile for a timeframe, with the sidebar overrides applied."""
+    p = dict(TF_PROFILES.get(interval, TF_PROFILES["15m"]))
+    p["rsi_buy"] = rsi_buy
+    p["rsi_short"] = rsi_short
+    p["entry"] = threshold
+    p["exit"] = min(p["exit"], threshold - 1)
+    p["max_age"] = max_age
+    if not use_confirm:
+        p["confirm"] = 0
+    p["trend_rsi"] = p["trend_rsi"] and use_trend_rsi
+    return p
+
+
+STALE_H = {k: v["stale_h"] for k, v in TF_PROFILES.items()}
+MIN_BARS = 60
 
 # ---------------------------------------------------------------- data
 
@@ -196,68 +309,133 @@ def roll_gap_bars(close, lookback=60):
 # ---------------------------------------------------------------- signals
 
 
-def indicators(close):
+def indicators(close, p):
+    n = p["rsi_n"]
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     # Wilder smoothing
-    avg_gain = gain.ewm(alpha=1 / RSI_N, adjust=False, min_periods=RSI_N).mean()
-    avg_loss = loss.ewm(alpha=1 / RSI_N, adjust=False, min_periods=RSI_N).mean()
+    avg_gain = gain.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    avg_loss = loss.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = (100 - 100 / (1 + rs)).fillna(50)
 
-    sma_f = close.rolling(FAST).mean()
-    sma_s = close.rolling(SLOW).mean()
-    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-    macd_sig = macd.ewm(span=9, adjust=False).mean()
-    std = close.rolling(BB_N).std()
-    bb_up = close.rolling(BB_N).mean() + 2 * std
-    bb_lo = close.rolling(BB_N).mean() - 2 * std
+    sma_f = close.rolling(p["fast"]).mean()
+    sma_s = close.rolling(p["slow"]).mean()
+    mf, ms, msig = p["macd"]
+    macd = close.ewm(span=mf, adjust=False).mean() - close.ewm(span=ms, adjust=False).mean()
+    macd_sig = macd.ewm(span=msig, adjust=False).mean()
+    mid = close.rolling(p["bb_n"]).mean()
+    std = close.rolling(p["bb_n"]).std()
     return dict(rsi=rsi, sma_f=sma_f, sma_s=sma_s, macd=macd,
-                macd_sig=macd_sig, bb_up=bb_up, bb_lo=bb_lo)
+                macd_sig=macd_sig, bb_up=mid + 2 * std, bb_lo=mid - 2 * std)
 
 
-def score_series(close, ind):
+def score_series(close, ind, p):
     """Range -6..+6. Every term is signed, so a genuine HOLD band exists."""
-    def pm(cond):                      # +1 / -1
-        return cond.astype(int) * 2 - 1
+    def pm(a, b):
+        """+1 above, -1 below, 0 on a tie or missing data.
 
-    return (
-        (ind["rsi"] < rsi_buy).astype(int) * 2          # oversold
-        - (ind["rsi"] > rsi_short).astype(int) * 2      # overbought
-        + pm(ind["macd"] > ind["macd_sig"])             # momentum
-        + pm(ind["sma_f"] > ind["sma_s"])               # trend
-        + pm(close > ind["sma_f"])                      # where price actually is
-        + (close <= ind["bb_lo"]).astype(int)
-        - (close >= ind["bb_up"]).astype(int)
-    )
+        A plain `a > b` collapses ties into -1, so three separate terms all
+        read bearish at once when price sits exactly on its averages. A halted
+        stock or a thin overnight futures session scored -3 SHORT off a
+        perfectly flat line. Ties are neutral, so score them that way.
+        """
+        return (a > b).astype(int) - (a < b).astype(int)
+
+    up = pm(ind["macd"], ind["macd_sig"])         # momentum
+    trend = pm(ind["sma_f"], ind["sma_s"])        # trend
+    loc = pm(close, ind["sma_f"])                 # where price actually is
+
+    over = ind["rsi"] > p["rsi_short"]
+    under = ind["rsi"] < p["rsi_buy"]
+
+    if p["trend_rsi"]:
+        bull = (trend > 0) & (loc > 0)
+        bear = (trend < 0) & (loc < 0)
+        over, under = over & ~bull, under & ~bear
+
+    # With zero volatility the bands collapse onto price and BOTH touches fire.
+    band = ind["bb_up"] > ind["bb_lo"]
+    return (under.astype(int) * 2 - over.astype(int) * 2 + up + trend + loc
+            + ((close <= ind["bb_lo"]) & band).astype(int)
+            - ((close >= ind["bb_up"]) & band).astype(int))
 
 
-def build_signals(close):
-    ind = indicators(close)
-    score = score_series(close, ind)
+def build_signals(close, interval):
+    """Stateful walk so entry and exit can use different rules.
 
-    sig = pd.Series("HOLD", index=close.index)
-    sig[score >= threshold] = "BUY"
-    sig[score <= -threshold] = "SHORT"
+    Opening needs |score| >= entry for `confirm` consecutive bars. Once open
+    the signal survives until score decays past exit, or price breaks the fast
+    SMA by veto_buf. The old vectorised version killed a signal the moment any
+    single term flipped, which on intraday bars is constant chatter.
+    """
+    p = prof(interval)
+    ind = indicators(close, p)
+    score = score_series(close, ind, p)
 
-    vetoed = pd.Series(False, index=close.index)
-    if use_veto:
-        bad_short = (sig == "SHORT") & (close > ind["sma_f"])
-        bad_buy = (sig == "BUY") & (close < ind["sma_f"])
-        vetoed = bad_short | bad_buy
-        sig[vetoed] = "HOLD"
+    entry_thr, exit_thr = p["entry"], p["exit"]
+    confirm, mx, vbuf = p["confirm"], p["max_age"], p["veto_buf"]
+    sma_f = ind["sma_f"]
 
-    # expire anything that has run past max_age consecutive bars
-    run = sig.groupby((sig != sig.shift()).cumsum()).cumcount()
-    expired = (run >= max_age) & (sig != "HOLD")
-    sig[expired] = "HOLD"
+    states, vetoes, expiries = [], [], []
+    state, run, s_up, s_dn = "HOLD", 0, 0, 0
 
+    for i in range(len(close)):
+        s_i = score.iloc[i]
+        px = float(close.iloc[i])
+        sma = sma_f.iloc[i]
+        ok = pd.notna(sma)
+        vetoed = False
+        # a real break of the fast SMA, not a one-tick poke through it
+        below = ok and px < sma * (1 - vbuf)
+        above = ok and px > sma * (1 + vbuf)
+
+        s_up = s_up + 1 if s_i >= entry_thr else 0
+        s_dn = s_dn + 1 if s_i <= -entry_thr else 0
+
+        if state == "HOLD":
+            run = 0
+            if s_up > confirm:
+                if use_veto and below:
+                    vetoed = True
+                else:
+                    state, run = "BUY", 1
+            elif s_dn > confirm:
+                if use_veto and above:
+                    vetoed = True
+                else:
+                    state, run = "SHORT", 1
+        elif state == "BUY":
+            kill = use_veto and below
+            if s_i < exit_thr or kill:
+                vetoed, state, run = kill, "HOLD", 0
+            else:
+                run += 1
+        elif state == "SHORT":
+            kill = use_veto and above
+            if s_i > -exit_thr or kill:
+                vetoed, state, run = kill, "HOLD", 0
+            else:
+                run += 1
+
+        expired = False
+        if state != "HOLD" and run > mx:
+            state, run, expired = "HOLD", 0, True
+
+        states.append(state)
+        vetoes.append(vetoed)
+        expiries.append(expired)
+
+    sig = pd.Series(states, index=close.index)
     valid = ind["sma_s"].notna()
-    snap = {k: v.iloc[-1] for k, v in ind.items()}
+    snap = {k: float(v.iloc[-1]) for k, v in ind.items()}
     snap["score"] = float(score.iloc[-1])
-    snap["vetoed"] = bool(vetoed.iloc[-1])
-    snap["expired"] = bool(expired.iloc[-1])
+    snap["vetoed"] = bool(vetoes[-1])
+    snap["expired"] = bool(expiries[-1])
+    snap["confirm"] = confirm
+    snap["fast"] = p["fast"]
+    snap["trend_rsi"] = p["trend_rsi"]
     return sig[valid], close[valid], snap
 
 
@@ -272,7 +450,8 @@ def reasons_text(snap, last):
         why.append(f"RSI {r:.0f}")
     why.append("MACD bullish" if snap["macd"] > snap["macd_sig"] else "MACD bearish")
     why.append("Uptrend" if snap["sma_f"] > snap["sma_s"] else "Downtrend")
-    why.append("Above 20 SMA" if last > snap["sma_f"] else "Below 20 SMA")
+    f = snap.get("fast", 20)
+    why.append(f"Above {f} SMA" if last > snap["sma_f"] else f"Below {f} SMA")
     if last <= snap["bb_lo"]:
         why.append("Lower Bollinger")
     elif last >= snap["bb_up"]:
@@ -281,6 +460,10 @@ def reasons_text(snap, last):
         why.append("VETOED by SMA20 rule")
     if snap["expired"]:
         why.append(f"EXPIRED past {max_age} bars")
+    if snap.get("trend_rsi"):
+        why.append("RSI trend-aware")
+    if snap.get("confirm"):
+        why.append(f"needs {snap['confirm'] + 1} bars to confirm")
     return " | ".join(why)
 
 
@@ -331,23 +514,30 @@ if not scan_futures_intraday:
     equities, futures = tickers, []
 
 bucket = int(datetime.now().timestamp() // 60) if live else 0
-with st.spinner(f"Scanning {len(tickers)} tickers..."):
-    raw_eq = load(tuple(equities), eq_period, "1d", bucket)
-    raw_fut = load(tuple(futures), "60d", fut_interval, bucket) if futures else None
 
-sources = {t: (raw_eq, "1d") for t in equities}
-sources.update({t: (raw_fut, fut_interval) for t in futures})
+
+def tf_for(t):
+    return fut_interval if (t.endswith("=F") and scan_futures_intraday) else "1d"
+
+
+# One download per timeframe. period MUST travel with interval — asking for a
+# year of 1m bars returns an empty frame and every ticker silently fails.
+needed = sorted({tf_for(t) for t in tickers} | set(mtf_list))
+raw_by_tf = {}
+with st.spinner(f"Scanning {len(tickers)} tickers across {len(needed)} timeframe(s)..."):
+    for tf in needed:
+        raw_by_tf[tf] = load(tuple(tickers), TF_PROFILES[tf]["period"], tf, bucket)
 
 rows, bt_rows, failed = [], [], []
 for t in tickers:
-    raw, interval = sources[t]
-    close = extract_close(raw, t)
-    if close is None or len(close) < MIN_BARS:
+    interval = tf_for(t)
+    close = extract_close(raw_by_tf.get(interval), t)
+    if close is None or len(close) < prof(interval)["min_bars"]:
         failed.append(t)
         continue
     try:
-        sig, cv, snap = build_signals(close)
-        if sig.empty:
+        sig, cv, snap = build_signals(close, interval)
+        if sig.empty or len(cv) < 2:
             failed.append(t)
             continue
 
@@ -355,8 +545,21 @@ for t in tickers:
         last = float(cv.iloc[-1])
         prev = float(cv.iloc[-2])
         age_h = bar_age_hours(cv.index[-1])
-        stale = age_h > STALE_H.get(interval, 48)
+        stale = age_h > prof(interval)["stale_h"]
         gaps = roll_gap_bars(cv) if t.endswith("=F") else []
+
+        # score this ticker on every comparison timeframe
+        matrix = {}
+        for m in mtf_list:
+            c2 = extract_close(raw_by_tf.get(m), t)
+            if c2 is None or len(c2) < prof(m)["min_bars"]:
+                matrix[m] = None
+                continue
+            try:
+                s2, _, snap2 = build_signals(c2, m)
+                matrix[m] = (snap2["score"], s2.iloc[-1])
+            except Exception:
+                matrix[m] = None
 
         rows.append({
             "ticker": t, "signal": sig.iloc[-1], "tf": interval,
@@ -366,6 +569,7 @@ for t in tickers:
             "chg_1bar_%": (last / prev - 1) * 100,
             "score": snap["score"], "rsi": snap["rsi"], "sma20": snap["sma_f"],
             "stale": stale, "bar_age_h": age_h, "roll_gap": len(gaps) > 0,
+            "matrix": matrix,
             "reasons": reasons_text(snap, last),
         })
 
@@ -373,8 +577,8 @@ for t in tickers:
         bt_rows.append({"ticker": t, "tf": interval, "strategy_%": strat,
                         "buy_hold_%": bh, "edge_%": strat - bh,
                         "trades": ntr, "win_rate_%": wr})
-    except Exception:
-        failed.append(t)
+    except Exception as e:
+        failed.append(f"{t} ({type(e).__name__})")
 
 if failed:
     st.sidebar.warning("No data for: " + ", ".join(failed))
@@ -419,6 +623,25 @@ if roll_list:
 # ---------------------------------------------------------------- render
 
 
+def mtf_strip(matrix, primary):
+    """Score on every timeframe, so a ticker never just disappears when you
+    switch intervals — you can see which bars agree and which do not."""
+    if not matrix:
+        return ""
+    cells = ['<b>score by tf</b>']
+    for tf, val in matrix.items():
+        star = "*" if tf == primary else ""
+        if val is None:
+            cells.append(f'<span class="mcell na"><i>{tf}</i> -</span>')
+            continue
+        sc, sg = val
+        cls = "pos" if sc > 0 else "neg" if sc < 0 else ""
+        mark = "&#9650;" if sg == "BUY" else "&#9660;" if sg == "SHORT" else ""
+        cells.append(f'<span class="mcell {cls}"><i>{tf}{star}</i> '
+                     f'{sc:+.0f}{mark}</span>')
+    return f'<div class="mtf">{"".join(cells)}</div>'
+
+
 def setup_card(r):
     cls = "buy" if r["signal"] == "BUY" else "short"
     ch = r["chg_1bar_%"]
@@ -435,7 +658,8 @@ def setup_card(r):
             f'<div class="meta">score {r["score"]:+.0f} &middot; {r["bars"]} bars '
             f'&middot; since {r["since"]}</div></div></div>'
             f'<div><div class="price">{r["close"]:.2f}</div>'
-            f'<div class="chg {ud}">{sign}{ch:.2f}%</div></div></div>')
+            f'<div class="chg {ud}">{sign}{ch:.2f}%</div></div></div>'
+            f'{mtf_strip(r.get("matrix"), r["tf"]) if show_mtf else ""}')
 
 
 def color_sig(v):
@@ -574,14 +798,35 @@ with tab_setups:
         st.markdown("".join(setup_card(r) for _, r in setups.iterrows()),
                     unsafe_allow_html=True)
 
+    if show_mtf and len(mtf_list) > 1:
+        split = []
+        for _, r in df.iterrows():
+            vals = [v[0] for v in (r["matrix"] or {}).values() if v is not None]
+            if vals and max(vals) >= threshold and min(vals) <= -threshold:
+                split.append(r["ticker"])
+        if split:
+            st.markdown(
+                f'<div class="note">Timeframes disagree on '
+                f'<b>{", ".join(split)}</b> — one interval reads buy while '
+                f'another reads short. That usually means the move is fresh '
+                f'and has not confirmed on the slower bars yet.</div>',
+                unsafe_allow_html=True)
+
 with tab_all:
-    cols = ["ticker", "signal", "tf", "score", "bars", "since", "entry",
-            "chg_since_%", "close", "chg_1bar_%", "rsi", "stale", "reasons"]
+    view = df.copy()
+    for m in mtf_list:
+        view[f"score {m}"] = [
+            (r[m][0] if isinstance(r, dict) and r.get(m) else None)
+            for r in view["matrix"]]
+    cols = (["ticker", "signal", "tf", "score"] + [f"score {m}" for m in mtf_list]
+            + ["bars", "since", "entry", "chg_since_%", "close", "chg_1bar_%",
+               "rsi", "stale", "reasons"])
+    num_cols = ["chg_since_%", "chg_1bar_%", "score"] + [f"score {m}" for m in mtf_list]
     st.dataframe(
-        df[cols].style.map(color_sig, subset=["signal"])
-                      .map(color_num, subset=["chg_since_%", "chg_1bar_%", "score"])
-                      .format(precision=2),
-        use_container_width=True, height=560)
+        view[cols].style.map(color_sig, subset=["signal"])
+                        .map(color_num, subset=num_cols)
+                        .format(precision=2),
+        width="stretch", height=560)
     st.caption("The reasons column shows every term that fed the score, including "
                "any signal that was vetoed or expired. If a ticker looks wrong, read "
                "that row first.")
@@ -743,7 +988,7 @@ with tab_bt:
     st.dataframe(
         bts.style.map(color_num, subset=["strategy_%", "buy_hold_%", "edge_%"])
                  .format(precision=1),
-        use_container_width=True, height=520)
+        width="stretch", height=520)
     beat = int((bt["edge_%"] > 0).sum())
     st.caption(f"Following every signal beat buy-and-hold on {beat} of {len(bt)} tickers "
                f"(avg edge {bt['edge_%'].mean():+.1f}%). Simulated on closes with no fees, "
@@ -752,12 +997,13 @@ with tab_bt:
 
 st.divider()
 pick = st.selectbox("Chart", df["ticker"])
-raw_pick, interval_pick = sources[pick]
-series = extract_close(raw_pick, pick)
+interval_pick = tf_for(pick)
+series = extract_close(raw_by_tf.get(interval_pick), pick)
+pp = prof(interval_pick)
 st.line_chart(
     pd.DataFrame({"Close": series,
-                  f"SMA {FAST}": series.rolling(FAST).mean(),
-                  f"SMA {SLOW}": series.rolling(SLOW).mean()}),
+                  f"SMA {pp['fast']}": series.rolling(pp["fast"]).mean(),
+                  f"SMA {pp['slow']}": series.rolling(pp["slow"]).mean()}),
     height=360, color=["#3DD9B0", "#5B6B85", "#33415C"])
 
 row = df[df["ticker"] == pick].iloc[0]
