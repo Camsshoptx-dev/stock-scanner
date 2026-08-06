@@ -82,26 +82,32 @@ CSS = """
   [data-testid="stMetricLabel"] p{font-size:9.5px !important}
   [data-testid="stMetricDelta"]{font-size:11px !important}
 
-  /* --- tabs: scroll sideways rather than wrap to three rows --- */
+  /* --- tabs: wrap to two rows so every tab stays visible and tappable ---
+     An earlier version scrolled these sideways, which hid Options and
+     Memecoins behind a swipe most people never discover — and if any parent
+     clips overflow, they become unreachable entirely. Wrapping is uglier by
+     a few pixels and far more usable. */
   .stTabs [data-baseweb="tab-list"]{
-    overflow-x:auto !important;
-    overflow-y:hidden !important;
-    flex-wrap:nowrap !important;
-    scrollbar-width:none;
-    -webkit-overflow-scrolling:touch;
-    gap:2px !important;
-    padding-bottom:2px;
-    /* fade on the right edge so it reads as scrollable */
-    mask-image:linear-gradient(90deg,#000 88%,transparent);
-    -webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);
+    flex-wrap:wrap !important;
+    overflow:visible !important;
+    gap:3px !important;
+    row-gap:3px !important;
+    padding-bottom:4px;
   }
-  .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar{display:none}
   .stTabs [data-baseweb="tab"]{
     flex:0 0 auto !important;
     white-space:nowrap !important;
-    padding:7px 11px !important;
-    font-size:13px !important;
+    padding:7px 10px !important;
+    font-size:12.5px !important;
     min-width:auto !important;
+  }
+  /* The sliding underline sits wrong once tabs wrap onto a second row. */
+  .stTabs [data-baseweb="tab-highlight"],
+  .stTabs [data-baseweb="tab-border"]{display:none !important}
+  .stTabs [aria-selected="true"]{
+    background:var(--card2,#161C2A) !important;
+    border-radius:6px 6px 0 0 !important;
+    box-shadow:inset 0 -2px 0 var(--accent,#3DD9B0) !important;
   }
   .stTabs [data-baseweb="tab-panel"]{padding-top:10px !important}
 
@@ -172,7 +178,7 @@ CSS = """
   }
   [data-testid="stMetricValue"]{font-size:17px !important}
   .tkr{font-size:14px !important}
-  .stTabs [data-baseweb="tab"]{padding:6px 9px !important;font-size:12px !important}
+  .stTabs [data-baseweb="tab"]{padding:6px 8px !important;font-size:11.5px !important}
 }
 
 /* ================================================================
