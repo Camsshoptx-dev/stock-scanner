@@ -136,6 +136,13 @@ CSS = """
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
+# Mobile layout lives in mobile.py so the tabbed build can share it.
+try:
+    import mobile
+    mobile.inject()
+except ImportError:
+    pass
+
 
 # ----------------------------------------------------------------------
 # DATA
