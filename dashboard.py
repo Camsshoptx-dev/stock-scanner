@@ -135,22 +135,20 @@ div[data-baseweb="tab-highlight"] { background-color:var(--accent); }
 
 # ---------------------------------------------------------------- config
 
-DEFAULT = ("SPY,QQQ,IWM,DIA,SMH,XLF,XLE,XLK,TQQQ,SOXL,"
-           "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO,ORCL,NFLX,"
-           "CRM,ADBE,AMD,MU,INTC,TSM,QCOM,ARM,MRVL,AMAT,"
-           "LRCX,PLTR,NOW,SNOW,CRWD,PANW,DDOG,NET,APP,IONQ,"
-           "UBER,ABNB,SHOP,DASH,RBLX,SPOT,SNAP,"
-           "JPM,BAC,WFC,GS,MS,C,SCHW,V,MA,BRK-B,"
-           "COIN,HOOD,PYPL,SOFI,AFRM,MSTR,MARA,RIOT,"
-           "LLY,UNH,JNJ,PFE,MRK,ABBV,MRNA,"
-           "XOM,CVX,COP,SLB,OXY,MPC,"
-           "WMT,COST,HD,TGT,NKE,SBUX,MCD,DIS,"
-           "CAT,BA,GE,UPS,LMT,DAL,"
-           "RIVN,LCID,PLUG,SOUN,RKLB,ACHR,CLSK,SMCI,"
-           "ES=F,MES=F,NQ=F,MNQ=F,YM=F,RTY=F,"
-           "CL=F,MCL=F,GC=F,MGC=F,SI=F,HG=F,NG=F,ZB=F,ZN=F,6E=F")
+# Futures only. The 100 US equities that used to live here now sit in the
+# Robinhood watchlist ("Watchlist 100") and are read through that API instead.
+# Scanning 116 symbols across six timeframes was ~700 yfinance series per
+# refresh, which is what kept pushing this app over its Cloud resource cap.
+# Sixteen symbols is roughly a seventh of that.
+DEFAULT = ("ES=F,MES=F,NQ=F,MNQ=F,YM=F,RTY=F,"      # index
+           "CL=F,MCL=F,NG=F,"                        # energy
+           "GC=F,MGC=F,SI=F,HG=F,"                   # metals
+           "ZB=F,ZN=F,"                              # rates
+           "6E=F")                                   # fx
 
 st.sidebar.header("Watchlist")
+st.sidebar.caption("Futures only — equities are read from the Robinhood "
+                   "watchlist, not scanned here.")
 tickers = [t.strip().upper() for t in
            st.sidebar.text_area("Tickers (comma separated)", DEFAULT, height=140).split(",")
            if t.strip()]
@@ -514,7 +512,7 @@ def backtest(sig, close):
 
 # ---------------------------------------------------------------- scan
 
-st.title("Stock Scanner")
+st.title("Futures Scanner")
 if not tickers:
     st.info("Add a ticker in the sidebar.")
     st.stop()
@@ -879,8 +877,9 @@ with tab_opt:
             live_setups = df[df["signal"] != "HOLD"]
             live_setups = live_setups[~live_setups["ticker"].str.endswith("=F")]
             if live_setups.empty:
-                st.info("No equity setups right now, so there is nothing to price. "
-                        "Futures options are not covered here.")
+                st.info("Nothing to price. This watchlist is futures-only and "
+                        "futures options are not covered here — add an equity "
+                        "ticker in the sidebar if you want chains pulled.")
             else:
                 smap = dict(zip(live_setups["ticker"], live_setups["signal"]))
                 with st.spinner(f"Pulling chains for {len(smap)} ticker(s)..."):

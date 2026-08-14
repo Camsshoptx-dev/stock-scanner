@@ -61,7 +61,12 @@ BOARD_SPLIT = "timeframe"   # "timeframe" -> daily swings | intraday scalps
                             # "direction" -> longs | shorts
 
 # --- options phase (board only — /stream and /signals are untouched)
-OPTIONS_ON = True           # add a third phase to /board
+OPTIONS_ON = False          # add a third phase to /board
+                            # Off by default now: the options scan skips
+                            # futures, and this watchlist is futures-only,
+                            # so leaving it on just burns a board phase
+                            # showing nothing. Flip back to True if you
+                            # re-add equity tickers above.
 OPTIONS_INTERVAL = 900      # refresh chains every 15 min (they are slow)
 OPTIONS_TARGET_DELTA = 0.40 # pick the contract nearest this delta
 OPTIONS_MIN_DTE = 21
@@ -190,21 +195,40 @@ EQUITY_PERIOD = FUTURES_PERIOD = None
 FAST = SLOW = RSI_N = BB_N = MIN_BARS = None
 _sync_legacy()
 
+# Futures only, matching dashboard.py. Equities moved to the Robinhood
+# watchlist and are no longer scanned here.
 TICKERS = [t.strip().upper() for t in (
-    "AAPL,MSFT,NVDA,TSLA,AMZN,GOOGL,META,AMD,NFLX,JPM,"
-    "SPY,QQQ,PLTR,COIN,SOFI,DIS,BA,UBER,SHOP,INTC,"
-    "ES=F,MES=F,NQ=F,MNQ=F,YM=F,RTY=F"
+    "ES=F,MES=F,NQ=F,MNQ=F,YM=F,RTY=F,"      # index
+    "CL=F,MCL=F,NG=F,"                        # energy
+    "GC=F,MGC=F,SI=F,HG=F,"                   # metals
+    "ZB=F,ZN=F,"                              # rates
+    "6E=F"                                    # fx
 ).split(",") if t.strip()]
 
 # CME futures are blocked in TradingView's free widgets -> chart CFD equivalents.
 # Signals and prices still come from real futures data via yfinance.
 TV_SYMBOL_MAP = {
+    # index - unchanged, these were already working
     "ES=F":  "BLACKBULL:SPX500",
     "MES=F": "BLACKBULL:SPX500",
     "NQ=F":  "BLACKBULL:NAS100",
     "MNQ=F": "BLACKBULL:NAS100",
     "YM=F":  "BLACKBULL:US30",
     "RTY=F": "BLACKBULL:US2000",
+    # commodities / fx - TVC and FX feeds are the free-widget equivalents.
+    # VERIFY THESE RENDER before trusting the board: TradingView changes
+    # which vendor prefixes are open to unauthenticated widgets, and a bad
+    # symbol shows an empty iframe rather than an error.
+    "CL=F":  "TVC:USOIL",
+    "MCL=F": "TVC:USOIL",
+    "GC=F":  "TVC:GOLD",
+    "MGC=F": "TVC:GOLD",
+    "SI=F":  "TVC:SILVER",
+    "6E=F":  "FX:EURUSD",
+    # NG=F, HG=F, ZB=F and ZN=F have no reliable free CFD equivalent.
+    # They fall through unmapped and will not chart. Signals and prices for
+    # them still come from real futures data via yfinance, so they appear
+    # in the scanner rows - only the TradingView pane is blank.
 }
 TV_INTERVAL = {"1d": "D", "1h": "60", "30m": "30", "15m": "15",
                "5m": "5", "2m": "2", "1m": "1"}
@@ -921,7 +945,7 @@ def charts_html(rows):
     if not charts:
         charts = [{"t": t, "s": TV_SYMBOL_MAP.get(t, t), "a": "HOLD",
                    "i": "15" if is_future(t) else "D"}
-                  for t in ["ES=F", "NQ=F", "YM=F", "SPY", "QQQ", "AAPL"]]
+                  for t in ["ES=F", "NQ=F", "YM=F", "CL=F", "GC=F", "6E=F"]]
 
     slots = "".join(
         f'<div class="chart"><span class="tag2" id="tag{i}"></span>'
@@ -1197,7 +1221,7 @@ def render_board():
 
     fallback = [{"t": t, "s": TV_SYMBOL_MAP.get(t, t), "a": "HOLD",
                  "i": "15" if is_future(t) else "D"}
-                for t in ["ES=F", "NQ=F", "YM=F", "SPY", "QQQ", "AAPL"]]
+                for t in ["ES=F", "NQ=F", "YM=F", "CL=F", "GC=F", "6E=F"]]
 
     opts_on = OPTIONS_OK and OPTIONS_ON
     phases = ["SCANNER", "CHARTS"] + (["OPTIONS"] if opts_on else [])
